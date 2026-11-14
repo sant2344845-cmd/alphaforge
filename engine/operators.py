@@ -14,9 +14,9 @@ def cs_rank(x: np.ndarray) -> np.ndarray:
     counts = np.sum(valid, axis=1, keepdims=True)
     filled = np.where(valid, x, np.inf)
     order = np.argsort(filled, axis=1)
-    ranks = np.argsort(order, axis=1).astype(np.float64)
+    ranks = np.argsort(order, axis=1).astype(np.float64) + 1.0
     with np.errstate(divide="ignore", invalid="ignore"):
-        out = np.where(counts > 1, ranks / (counts - 1.0), 0.5)
+        out = np.where(counts > 0, ranks / counts, np.nan)
     out[~valid] = np.nan
     return out
 
@@ -116,24 +116,24 @@ def safe_div(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     with np.errstate(divide="ignore", invalid="ignore"):
         return np.where(np.abs(y) > EPS, x / y, np.nan)
 
-OPERATOR_REGISTRY: dict[str, tuple[callable, int, bool]] = {
-    "cs_rank": (cs_rank, 1, False),
-    "cs_zscore": (cs_zscore, 1, False),
-    "cs_demean": (cs_demean, 1, False),
-    "neg": (lambda x: -x, 1, False),
-    "abs": (np.abs, 1, False),
-    "sign": (np.sign, 1, False),
-    "ts_delay": (ts_delay, 1, True),
-    "ts_delta": (ts_delta, 1, True),
-    "ts_pct_change": (ts_pct_change, 1, True),
-    "ts_mean": (ts_mean, 1, True),
-    "ts_std": (ts_std, 1, True),
-    "ts_zscore": (ts_zscore, 1, True),
-    "ts_rank": (ts_rank, 1, True),
-    "ts_decay_linear": (ts_decay_linear, 1, True),
-    "add": (np.add, 2, False),
-    "sub": (np.subtract, 2, False),
-    "mul": (np.multiply, 2, False),
-    "div": (safe_div, 2, False),
-    "ts_corr": (ts_corr, 2, True),
+OPERATOR_REGISTRY: dict[str, dict] = {
+    "cs_rank": {"fn": cs_rank, "arity": 1, "params": []},
+    "cs_zscore": {"fn": cs_zscore, "arity": 1, "params": []},
+    "cs_demean": {"fn": cs_demean, "arity": 1, "params": []},
+    "neg": {"fn": lambda x: -x, "arity": 1, "params": []},
+    "abs": {"fn": np.abs, "arity": 1, "params": []},
+    "sign": {"fn": np.sign, "arity": 1, "params": []},
+    "ts_delay": {"fn": ts_delay, "arity": 1, "params": ["d"]},
+    "ts_delta": {"fn": ts_delta, "arity": 1, "params": ["d"]},
+    "ts_pct_change": {"fn": ts_pct_change, "arity": 1, "params": ["d"]},
+    "ts_mean": {"fn": ts_mean, "arity": 1, "params": ["d"]},
+    "ts_std": {"fn": ts_std, "arity": 1, "params": ["d"]},
+    "ts_zscore": {"fn": ts_zscore, "arity": 1, "params": ["d"]},
+    "ts_rank": {"fn": ts_rank, "arity": 1, "params": ["d"]},
+    "ts_decay_linear": {"fn": ts_decay_linear, "arity": 1, "params": ["d"]},
+    "add": {"fn": np.add, "arity": 2, "params": []},
+    "sub": {"fn": np.subtract, "arity": 2, "params": []},
+    "mul": {"fn": np.multiply, "arity": 2, "params": []},
+    "div": {"fn": safe_div, "arity": 2, "params": []},
+    "ts_corr": {"fn": ts_corr, "arity": 2, "params": ["d"]},
 }
