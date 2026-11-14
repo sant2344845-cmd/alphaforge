@@ -1,0 +1,9 @@
+﻿numpy
+scipy
+polars
+yfinance
+pydantic
+google-genai
+streamlit
+pandas
+matplotlib
