@@ -1,4 +1,5 @@
 ﻿from __future__ import annotations
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import random
 import numpy as np
@@ -30,7 +31,7 @@ def _collect_nodes(root: AlphaNode) -> list[AlphaNode]:
 
 def random_tree(rng: random.Random, max_depth: int = 3) -> AlphaNode:
     if max_depth <= 1 or rng.random() < 0.35:
-        return AlphaNode("feature", rng.choice(["returns", "vwap", "close", "volume", "adv20"]))
+        return AlphaNode("feature", rng.choice(["returns", "vwap", "close", "volume", "adv20", "high", "low"]))
     c = rng.random()
     if c < 0.30:
         return AlphaNode("op", rng.choice(UNARY_OPS), [random_tree(rng, max_depth - 1)])
@@ -64,8 +65,9 @@ def crossover_trees(parent_a: AlphaNode, parent_b: AlphaNode, rng: random.Random
     t, s = rng.choice(_collect_nodes(child)), rng.choice(_collect_nodes(donor))
     t.kind, t.value, t.children, t.window = s.kind, s.value, s.children, s.window
     return parent_a.clone() if child.depth() > max_depth else child
+
 class EvolutionaryAlphaEngine:
-    def __init__(self, features: dict[str, np.ndarray], fwd_returns: np.ndarray, cost_bps: float = 3.0, max_corr_threshold: float = 0.45, seed: int = 42):
+    def __init__(self, features: dict[str, np.ndarray], fwd_returns: np.ndarray, cost_bps: float = 3.0, max_corr_threshold: float = 0.50, seed: int = 42):
         self.features, self.fwd_returns = features, fwd_returns
         self.cost_bps, self.max_corr_threshold = cost_bps, max_corr_threshold
         self.rng = random.Random(seed)
@@ -74,21 +76,11 @@ class EvolutionaryAlphaEngine:
         self._seen: set[str] = set()
 
     def _fitness(self, node: AlphaNode, m: BacktestMetrics) -> float:
-        # Scarta falsi positivi senza potere predittivo cross-sectional (t-stat < 1.2)
-        if np.isnan(m.sharpe_net) or m.sharpe_net <= 0.15 or abs(m.ic_tstat) < 1.2 or m.daily_turnover > 0.65:
+        if np.isnan(m.sharpe_net) or m.sharpe_net <= 0.12 or abs(m.ic_tstat) < 1.1 or m.daily_turnover > 0.70:
             return -999.0
-        return float(m.sharpe_net + 0.35 * abs(m.ic_tstat) - 0.02 * node.size() - 0.30 * m.daily_turnover)
+        return float(m.sharpe_net + 0.35 * abs(m.ic_tstat) - 0.02 * node.size() - 0.25 * m.daily_turnover)
 
-    def evaluate_candidate(self, formula: str, rationale: str = "Evolved") -> AlphaCandidate | None:
-        try:
-            node = parse_alpha(formula)
-        except AlphaSyntaxError:
-            return None
-        canon = node.to_formula()
-        if canon in self._seen:
-            return None
-        self._seen.add(canon)
-        self.total_trials += 1
+    def _eval_parsed(self, node: AlphaNode, canon: str, rationale: str) -> AlphaCandidate | None:
         try:
             sig = node.evaluate(self.features)
             if not isinstance(sig, np.ndarray) or sig.shape != self.fwd_returns.shape or np.mean(np.isnan(sig)) > 0.50:
@@ -98,6 +90,28 @@ class EvolutionaryAlphaEngine:
         except Exception:
             return None
 
+    def evaluate_batch(self, items: list[tuple[str, str]]) -> list[AlphaCandidate]:
+        tasks = []
+        for formula, rationale in items:
+            try:
+                node = parse_alpha(formula)
+            except AlphaSyntaxError:
+                continue
+            canon = node.to_formula()
+            if canon not in self._seen:
+                self._seen.add(canon)
+                self.total_trials += 1
+                tasks.append((node, canon, rationale))
+        if not tasks:
+            return []
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            results = list(ex.map(lambda t: self._eval_parsed(*t), tasks))
+        return [r for r in results if r is not None]
+
+    def evaluate_candidate(self, formula: str, rationale: str = "Evolved") -> AlphaCandidate | None:
+        res = self.evaluate_batch([(formula, rationale)])
+        return res[0] if res else None
+
     def is_orthogonal(self, cand: AlphaCandidate) -> bool:
         for ex in self.alpha_zoo:
             corr = np.corrcoef(cand.metrics.net_returns, ex.metrics.net_returns)[0, 1]
@@ -105,25 +119,27 @@ class EvolutionaryAlphaEngine:
                 return False
         return True
 
-    def evolve(self, seed_hypotheses: list[tuple[str, str]], generations: int = 6, pop_size: int = 40, top_k_zoo: int = 5) -> list[AlphaCandidate]:
-        pop = [c for f, r in seed_hypotheses if (c := self.evaluate_candidate(f, r)) is not None]
+    def evolve(self, seed_hypotheses: list[tuple[str, str]], generations: int = 8, pop_size: int = 50, top_k_zoo: int = 5) -> list[AlphaCandidate]:
+        pop = self.evaluate_batch(seed_hypotheses)
         while len(pop) < pop_size:
-            if (c := self.evaluate_candidate(random_tree(self.rng, 3).to_formula(), "Random Seed")) is not None:
-                pop.append(c)
+            batch = [(random_tree(self.rng, 3).to_formula(), "Random Seed") for _ in range(pop_size - len(pop) + 10)]
+            pop.extend(self.evaluate_batch(batch))
+        pop = pop[:pop_size]
+
         for _ in range(generations):
             pop.sort(key=lambda c: c.fitness, reverse=True)
-            elites = pop[: max(6, pop_size // 4)]
-            next_gen = list(elites)
-            while len(next_gen) < pop_size:
+            elites = pop[: max(8, pop_size // 4)]
+            proposals = []
+            for _ in range(pop_size * 2):
                 if self.rng.random() < 0.65 and len(elites) >= 2:
                     p1, p2 = self.rng.sample(elites, 2)
-                    node, rat = crossover_trees(p1.node, p2.node, self.rng), f"Cross({p1.rationale[:14]}x{p2.rationale[:14]})"
+                    proposals.append((crossover_trees(p1.node, p2.node, self.rng).to_formula(), f"Cross({p1.rationale[:12]}x{p2.rationale[:12]})"))
                 else:
                     p = self.rng.choice(elites)
-                    node, rat = mutate_tree(p.node, self.rng), f"Mut({p.rationale[:20]})"
-                if (c := self.evaluate_candidate(node.to_formula(), rat)) is not None:
-                    next_gen.append(c)
-            pop = next_gen
+                    proposals.append((mutate_tree(p.node, self.rng).to_formula(), f"Mut({p.rationale[:18]})"))
+            evaluated = self.evaluate_batch(proposals)
+            pop = (elites + evaluated)[:pop_size]
+
         pop.sort(key=lambda c: c.fitness, reverse=True)
         for cand in pop:
             if len(self.alpha_zoo) >= top_k_zoo:
