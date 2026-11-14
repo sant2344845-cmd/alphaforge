@@ -115,3 +115,25 @@ def ts_corr(x: np.ndarray, y: np.ndarray, d: int) -> np.ndarray:
 def safe_div(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     with np.errstate(divide="ignore", invalid="ignore"):
         return np.where(np.abs(y) > EPS, x / y, np.nan)
+
+OPERATOR_REGISTRY: dict[str, tuple[callable, int, bool]] = {
+    "cs_rank": (cs_rank, 1, False),
+    "cs_zscore": (cs_zscore, 1, False),
+    "cs_demean": (cs_demean, 1, False),
+    "neg": (lambda x: -x, 1, False),
+    "abs": (np.abs, 1, False),
+    "sign": (np.sign, 1, False),
+    "ts_delay": (ts_delay, 1, True),
+    "ts_delta": (ts_delta, 1, True),
+    "ts_pct_change": (ts_pct_change, 1, True),
+    "ts_mean": (ts_mean, 1, True),
+    "ts_std": (ts_std, 1, True),
+    "ts_zscore": (ts_zscore, 1, True),
+    "ts_rank": (ts_rank, 1, True),
+    "ts_decay_linear": (ts_decay_linear, 1, True),
+    "add": (np.add, 2, False),
+    "sub": (np.subtract, 2, False),
+    "mul": (np.multiply, 2, False),
+    "div": (safe_div, 2, False),
+    "ts_corr": (ts_corr, 2, True),
+}
